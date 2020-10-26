@@ -1,7 +1,22 @@
 import chamwithemp
 import MAABE
-from charm.toolbox.integergroup import InitBenchmark, StartBenchmark, EndBenchmark, GetBenchmark
+import re
+from charm.toolbox.integergroup import integer
 from charm.toolbox.pairinggroup import PairingGroup,GT
+from charm.toolbox.symcrypto import AuthenticatedCryptoAbstraction,SymmetricCryptoAbstraction
+from charm.core.math.pairing import hashPair as extractor
+
+
+groupObj = PairingGroup('SS512')
+
+maabe = MAABE.MaabeRW15(groupObj)
+chamHash = chamwithemp.Chamwithemp()
+public_parameters = maabe.setup()
+
+attrs1 = ['ONE', 'TWO']
+attrs2 = ['THREE', 'FOUR']
+
+access_policy = '((STUDENT@UT or PROFESSOR@OU) and (STUDENT@UT or MASTERS@OU))'
 
 def merge_dicts(*dict_args):
     """
@@ -13,6 +28,11 @@ def merge_dicts(*dict_args):
         result.update(dictionary)
     return result
 
+def cut_text(text,lenth): 
+    textArr = re.findall('.{'+str(lenth)+'}', text) 
+    textArr.append(text[(len(textArr)*lenth):]) 
+    return textArr
+
 def main():
     groupObj = PairingGroup('SS512')
 
@@ -22,35 +42,23 @@ def main():
 
     access_policy = '((STUDENT@UT or PROFESSOR@OU) and (STUDENT@UT or MASTERS@OU))'
     if debug:
-        print("attrs1 =>", attrs1);
-        print("attrs2 =>", attrs2);
+        print("attrs1 =>", attrs1)
+        print("attrs2 =>", attrs2)
         print("Policy =>", access_policy)
 
     # setup
-    assert groupObj.InitBenchmark(), "failed to init benchmark"
-    groupObj.StartBenchmark(["RealTime"])
     public_parameters = maabe.setup()
-    groupObj.EndBenchmark()
-    setuptime1 = groupObj.GetBenchmark("RealTime")
 
     # authsetup 2AA
-    groupObj.StartBenchmark(["RealTime"])
     (pk1, sk1) = maabe.authsetup(public_parameters, 'UT')
     (pk2, sk2) = maabe.authsetup(public_parameters, 'OU')
-    groupObj.EndBenchmark()
-    authsetuptime = groupObj.GetBenchmark("RealTime")
     maabepk = {'UT': pk1, 'OU': pk2}
 
     # keygen
     chamHash = chamwithemp.Chamwithemp()
-    assert InitBenchmark(), "failed to init benchmark"
-    StartBenchmark(["RealTime"])
     (pk, sk) = chamHash.keygen(1024)
-    EndBenchmark()
-    keygentime1 = GetBenchmark("RealTime")
 
     # keygen Bob
-    groupObj.StartBenchmark(["RealTime"])
     gid = "bob"
     user_attr1 = ['STUDENT@UT']
     user_attr2 = ['STUDENT@OU']
@@ -59,49 +67,59 @@ def main():
     user_sk2 = maabe.multiple_attributes_keygen(public_parameters, sk2, gid, user_attr2)
 
     user_sk = {'GID': gid, 'keys': merge_dicts(user_sk1, user_sk2)}
-    groupObj.EndBenchmark()
-    keygentime = groupObj.GetBenchmark("RealTime")
+
+    # hash
+    msg = "Video provides a powerful way to help you prove your point. When you click Online Video, you can paste in the embed code for t"
+    xi = chamHash.hash(pk, msg)
+    etd = [xi['p1'],xi['q1']]
+    if debug: print("Hash...")
+    if debug: print("hash result =>", xi)
+ 
 
     # encrypt
-    groupObj.StartBenchmark(["RealTime"])
-    rand_msg = groupObj.random(GT)
-    if debug: print("msg =>", rand_msg)
-    ct = maabe.encrypt(public_parameters, maabepk, rand_msg, access_policy)
-    groupObj.EndBenchmark()
-    encrypttime = groupObj.GetBenchmark("RealTime")
+    rand_key = groupObj.random(GT)
+    if debug: print("msg =>", rand_key)
+    #encrypt rand_key
+    maabect = maabe.encrypt(public_parameters, maabepk, rand_key, access_policy)
+    #rand_key->symkey AE  
+    symcrypt = AuthenticatedCryptoAbstraction(extractor(rand_key))
+    #symcrypt msg(etd=(p1,q1))
+    etdtostr = [str(i) for i in etd]
+    etdsumstr = etdtostr[0]+etdtostr[1]
+    symct = symcrypt.encrypt(etdsumstr)
+
+    ct = {'rkc':maabect,'ec':symct}
+
     if debug: print("\n\nCiphertext...\n")
     groupObj.debug(ct)
     print("ciphertext:=>", ct)
 
-    # hash
-    assert InitBenchmark(), "failed to init benchmark"
-    StartBenchmark(["RealTime"])
-    msg = "Video provides a powerful way to help you prove your point. When you click Online Video, you can paste in the embed code for t"
-    xi = chamHash.hash(pk, msg)
-    if debug: print("Hash...")
-    if debug: print("hash result =>", xi)
-    EndBenchmark()
-    hashtime = GetBenchmark("RealTime")
-
     # decrypt
-    groupObj.StartBenchmark(["RealTime"])
-    rec_msg = maabe.decrypt(public_parameters, user_sk, ct)
-    groupObj.EndBenchmark()
-    decrypttime = groupObj.GetBenchmark("RealTime")
-    if debug: print("\n\nDecrypt...\n")
-    if debug: print("Rec msg =>", rec_msg)
+    #decrypt rand_key
+    rec_key = maabe.decrypt(public_parameters, user_sk, maabect)
+    assert rand_key == rec_key, "FAILED Decryption: random key is incorrect"
+    #rec_key->symkey AE
+    rec_symcrypt = AuthenticatedCryptoAbstraction(extractor(rec_key))
+    #symdecrypt rec_etdsumstr
+    rec_etdsumbytes = rec_symcrypt.decrypt(ct['ec'])
+    rec_etdsumstr = str(rec_etdsumbytes, encoding="utf8")
+    print("etdsumstr type=>",type(rec_etdsumstr))
+    #sumstr->etd str list
+    rec_etdtolist = cut_text(rec_etdsumstr, len(etdtostr[0]))
+    print("rec_etdtolist=>",rec_etdtolist)
+    #etd str list->etd integer list
+    rec_etdint = [integer(int(rec_etdtolist[0])),integer(int(rec_etdtolist[1]))]
+    print("rec_etdint=>",rec_etdint)
 
-    assert rand_msg == rec_msg, "FAILED Decryption: message is incorrect"
+    if debug: print("\n\nDecrypt...\n")
     if debug: print("Successful Decryption!!!")
 
     # collision
-    assert InitBenchmark(), "failed to init benchmark"
-    StartBenchmark(["RealTime"])
     msg1 = "Video provides a powerful way to help you prove your point. When you click Online Video, you can paste in the embed code for p"
+    assert xi['p1'] == rec_etdint[0], "FAILED Decryption: etd key p1 is incorrect"
+    assert xi['q1'] == rec_etdint[1], "FAILED Decryption: etd key q1 is incorrect"
     r1 = chamHash.collision(msg, msg1, xi, sk, pk)
     if debug: print("new randomness =>", r1)
-    EndBenchmark()
-    collisiontime = GetBenchmark("RealTime")
 
     if debug: print("collision generated correctly!!!")
 
