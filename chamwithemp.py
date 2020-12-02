@@ -1,5 +1,9 @@
+# from charm.toolbox.Hash import ChamHash
+# from charm.toolbox.integergroup import IntegerGroupQ,gcd,randomPrime,isPrime,random,InitBenchmark,GetBenchmark,StartBenchmark,EndBenchmark
+# from charm.toolbox.conversion import Conversion
+
 from charm.toolbox.Hash import ChamHash
-from charm.toolbox.integergroup import IntegerGroupQ,gcd,randomPrime,isPrime,random,InitBenchmark,GetBenchmark,StartBenchmark,EndBenchmark
+from charm.toolbox.integergroup import IntegerGroupQ,gcd,randomPrime,isPrime,random
 from charm.toolbox.conversion import Conversion
 
 debug = False
@@ -25,7 +29,7 @@ class Chamwithemp(ChamHash):
         return (pk, sk)
 
     #generate chameleon hash
-    def hash(self, pk, message, r=0):
+    def hash(self, pk, sk, message, r=0):
         #generate ephemeral trapdoors(p1,q1)
         while True:
             p1, q1 = randomPrime(pk['secparam']), randomPrime(pk['secparam'])
@@ -42,10 +46,11 @@ class Chamwithemp(ChamHash):
         print("(p1,q1,N1)=>", (p1,q1,N1))
         print("N*N1=>",N1 * pk['N'])
         phi_NN1 = pk['phi_N'] * (N1 - p1 - q1 + 1)
+        print("phi_NN1=>", phi_NN1)
 
         #find e inverse mod N1 * N, so gcd(e,phi_NN1)==1
         while True:
-            e = random(pk['secparam'])
+            e = random(phi_NN1)
             if not gcd(e, phi_NN1) == 1:
                 continue
             break
@@ -66,26 +71,24 @@ class Chamwithemp(ChamHash):
 
     def hashcheck(self, pk, message, xi):
         M = Conversion.bytes2integer(message)
-        h1 = group.hash(M) * (xi['r'] ** xi['e']) % (pk['N'] * xi['N1'])
+        h1 = (group.hash(M) * (xi['r'] ** xi['e'])) % (pk['N'] * xi['N1'])
         if h1 == xi['h']:
             return True
         else:
             return False
 
-    def collision(self, m, m1, xi, sk, pk):
-        if xi['N1'] == xi['p1'] * xi['q1'] and pk['N'] == sk['p'] * sk['q']:
-            if (self.hashcheck(pk, m, xi) == 1):
-                print("e=>", xi['e'])
-                print("N*N1=>",pk['N'] * xi['N1'])
-                d = (xi['e'] ** -1) % (pk['N'] * xi['N1'])
-                r1 = (((group.hash(m1) ** (-1)) * xi['h']) ** d) % (pk['N'] * xi['N1'])
-                print("r1 =>", r1)
-                return r1
-            else:
-                print("hash check failed")
-        else:
-            print("trapdoor key error")
-
+    def collision(self, m, m1, xi, etd, pk):
+        phi_NN1 = pk['phi_N'] * (xi['N1'] - etd['p1'] - etd['q1'] + 1)
+        d = (xi['e'] ** -1) % (phi_NN1)
+        print('d=>',d)
+        if d == 1 / xi['e']:
+            print('reverse')
+        M1 = Conversion.bytes2integer(m1)
+        M = Conversion.bytes2integer(m)
+        h = (group.hash(M) * (xi['r'] ** xi['e'])) % (pk['N'] * xi['N1'])
+        r1 = (((group.hash(M1) ** (-1)) * h) ** d) % (pk['N'] * xi['N1'])
+        print("r1 =>", r1)
+        return r1
 
 def main():
         # test p and q primes for unit tests only
@@ -96,29 +99,22 @@ def main():
 
         #keygen
         chamHash = Chamwithemp()
-        assert InitBenchmark(), "failed to init benchmark"
-        StartBenchmark(["RealTime"])
         (pk, sk) = chamHash.keygen(1024)
-        EndBenchmark()
 
         # hash
-        assert InitBenchmark(), "failed to init benchmark"
-        StartBenchmark(["RealTime"])
         msg = "Hello world this is the first message!"
-        xi = chamHash.hash(pk, msg)
+        xi = chamHash.hash(pk, sk,msg)
         if debug: print("Hash...")
         if debug: print("hash result =>", xi)
-        EndBenchmark()
 
         # collision
-        assert InitBenchmark(), "failed to init benchmark"
-        StartBenchmark(["RealTime"])
         msg1 = "Hello world this is the second message!"
-        r1 = chamHash.collision(msg, msg1, xi, sk, pk)
+        etd = {'p1':xi['p1'],'q1':xi['q1']}
+        r1 = chamHash.collision(msg, msg1, xi, etd, pk)
+        xi['r'] = r1
         if debug: print("new randomness =>", r1)
-        EndBenchmark()
-
-        if debug: print("collision generated correctly!!!")
+        if chamHash.hashcheck(pk,msg1,xi):
+            print("success")
 
 if __name__ == '__main__':
     debug = True
